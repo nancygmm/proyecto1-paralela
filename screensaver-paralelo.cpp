@@ -2,6 +2,7 @@
 #include <OpenGL/gl.h>
 #include <OpenGL/glu.h>
 #include <GLUT/glut.h>
+#include <omp.h>
 #include <vector>
 #include <random>
 #include <chrono>
@@ -19,6 +20,7 @@ int PARTICLE_COUNT = 200000;
 int STAR_COUNT = 15000;           
 int MATH_ITERATIONS = 15;         
 bool HEAVY_MATH_MODE = true;      
+int num_threads = 4;              
 
 
 chrono::high_resolution_clock::time_point start_time;
@@ -27,8 +29,16 @@ chrono::high_resolution_clock::time_point frame_end;
 double total_gen_time = 0.0;
 double total_draw_time = 0.0;
 double total_computation_time = 0.0;
+double total_parallel_time = 0.0;
 int frame_count_timing = 0;
 bool timing_enabled = true;
+
+
+struct RenderData {
+    float x, y, z;
+    float r, g, b, a;
+    bool visible;
+};
 
 struct Camera {
     float x, y, z;          
@@ -48,6 +58,10 @@ float currentFPS = 0.0f;
 struct Particle{float a,z,r,spd,band,jx,jy;};
 vector<Particle> pts,stars;
 
+
+vector<RenderData> particle_render_data;
+vector<RenderData> star_render_data;
+
 float now(){ 
     static auto t0=chrono::high_resolution_clock::now(); 
     auto t=chrono::high_resolution_clock::now(); 
@@ -57,28 +71,31 @@ float now(){
 
 void saveTimingMetrics() {
     if (frame_count_timing > 0) {
-        ofstream file("sequential_timing_results.txt", ios::app);
-        file << "=== MÉTRICAS SECUENCIALES ===" << endl;
+        ofstream file("parallel_timing_results.txt", ios::app);
+        file << "=== MÉTRICAS PARALELAS (OpenMP - ALTA CARGA) ===" << endl;
+        file << "Número de hilos utilizados: " << num_threads << endl;
         file << "Partículas procesadas: " << PARTICLE_COUNT << endl;
         file << "Iteraciones matemáticas por partícula: " << MATH_ITERATIONS << endl;
         file << "Estrellas: " << STAR_COUNT << endl;
         file << "Frames procesados: " << frame_count_timing << endl;
         file << "Tiempo de generación por frame: " << (total_gen_time / frame_count_timing) * 1000 << " ms" << endl;
         file << "Tiempo de renderizado por frame: " << (total_draw_time / frame_count_timing) * 1000 << " ms" << endl;
+        file << "Tiempo de cálculos paralelos por frame: " << (total_parallel_time / frame_count_timing) * 1000 << " ms" << endl;
         file << "Tiempo total de computación: " << total_computation_time << " segundos" << endl;
         file << "Tiempo por frame: " << (total_computation_time / frame_count_timing) * 1000 << " ms" << endl;
         file << "FPS basado en cálculos: " << frame_count_timing / total_computation_time << endl;
         file << "Operaciones matemáticas estimadas por frame: " << (PARTICLE_COUNT * MATH_ITERATIONS * 10) << endl;
-        file << "================================" << endl << endl;
+        file << "=====================================" << endl << endl;
         file.close();
         
-        cout << "\n=== MÉTRICAS SECUENCIALES FINALES ===" << endl;
+        cout << "\n=== MÉTRICAS PARALELAS FINALES ===" << endl;
+        cout << "Número de hilos: " << num_threads << endl;
         cout << "Partículas: " << PARTICLE_COUNT << " | Iteraciones: " << MATH_ITERATIONS << endl;
         cout << "Frames procesados: " << frame_count_timing << endl;
         cout << "Tiempo total de computación: " << total_computation_time << " segundos" << endl;
         cout << "Tiempo por frame: " << (total_computation_time / frame_count_timing) * 1000 << " ms" << endl;
         cout << "FPS: " << frame_count_timing / total_computation_time << endl;
-        cout << "=====================================" << endl;
+        cout << "====================================" << endl;
     }
 }
 
@@ -87,68 +104,84 @@ void gen(int n = -1){
     
     auto gen_start = chrono::high_resolution_clock::now();
     
-    cout << "Generando " << n << " partículas SECUENCIAL" << endl;
+    cout << "Generando " << n << " partículas PARALELO" << endl;
     
     pts.resize(n);
-    std::mt19937 rng(1337);
-    std::uniform_real_distribution<float> U(0.f,1.f),S(-1.f,1.f);
+    particle_render_data.resize(n * 6); 
     
     
-    for(int i = 0; i < n; i++){
+    #pragma omp parallel num_threads(num_threads)
+    {
         
-        pts[i].a=6.2831853f*U(rng);
-        pts[i].z=-1200.f*U(rng)-40.f;
-        pts[i].r=4.f+26.f*powf(U(rng),0.7f);
-        pts[i].spd=18.f+48.f*U(rng);
-        pts[i].band=floorf(U(rng)*7.f);
-        pts[i].jx=0.6f*S(rng);
-        pts[i].jy=0.6f*S(rng);
+        thread_local std::mt19937 rng(1337 + omp_get_thread_num());
+        thread_local std::uniform_real_distribution<float> U(0.f,1.f);
+        thread_local std::uniform_real_distribution<float> S(-1.f,1.f);
         
         
-        if(HEAVY_MATH_MODE) {
-            for(int iter = 0; iter < MATH_ITERATIONS; iter++) {
-                
-                float complexity_factor = 1.0f + iter * 0.1f;
-                float dummy = 0;
-                
-                
-                dummy += sinf(pts[i].a * complexity_factor) * cosf(pts[i].z * complexity_factor);
-                dummy += tanf(pts[i].r * 0.01f + iter) * sinf(pts[i].spd * 0.001f);
-                dummy += sqrtf(fabsf(pts[i].r * complexity_factor + 1));
-                dummy += powf(fabsf(pts[i].spd), 1.2f + 0.05f * iter);
-                dummy += expf(-fabsf(pts[i].jx) * 0.1f) * logf(fabsf(pts[i].jy) + 1.0f);
-                dummy += atanf(pts[i].band + iter) * sinhf(pts[i].a * 0.1f);
-                
-                
-                for(int j = 0; j < 3; j++) {
-                    dummy += cosf(pts[i].a + j) * sinf(pts[i].z + j);
+        #pragma omp for schedule(dynamic, 100)
+        for(int i = 0; i < n; i++){
+            
+            pts[i].a=6.2831853f*U(rng);
+            pts[i].z=-1200.f*U(rng)-40.f;
+            pts[i].r=4.f+26.f*powf(U(rng),0.7f);
+            pts[i].spd=18.f+48.f*U(rng);
+            pts[i].band=floorf(U(rng)*7.f);
+            pts[i].jx=0.6f*S(rng);
+            pts[i].jy=0.6f*S(rng);
+            
+            
+            if(HEAVY_MATH_MODE) {
+                for(int iter = 0; iter < MATH_ITERATIONS; iter++) {
+                    float complexity_factor = 1.0f + iter * 0.1f;
+                    float dummy = 0;
+                    
+                    
+                    dummy += sinf(pts[i].a * complexity_factor) * cosf(pts[i].z * complexity_factor);
+                    dummy += tanf(pts[i].r * 0.01f + iter) * sinf(pts[i].spd * 0.001f);
+                    dummy += sqrtf(fabsf(pts[i].r * complexity_factor + 1));
+                    dummy += powf(fabsf(pts[i].spd), 1.2f + 0.05f * iter);
+                    dummy += expf(-fabsf(pts[i].jx) * 0.1f) * logf(fabsf(pts[i].jy) + 1.0f);
+                    dummy += atanf(pts[i].band + iter) * sinhf(pts[i].a * 0.1f);
+                    
+                    for(int j = 0; j < 3; j++) {
+                        dummy += cosf(pts[i].a + j) * sinf(pts[i].z + j);
+                    }
+                    
+                    pts[i].a += dummy * 0.0001f;
+                    pts[i].jx += dummy * 0.00005f;
                 }
-                
-                
-                pts[i].a += dummy * 0.0001f;
-                pts[i].jx += dummy * 0.00005f;
             }
         }
         
         
-        if((i + 1) % 50000 == 0) {
-            cout << "  Progreso: " << (i + 1) << "/" << n << " partículas..." << endl;
+        #pragma omp single
+        {
+            cout << "  Progreso: Generación paralela con " << num_threads << " hilos..." << endl;
         }
     }
     
     
     int m = STAR_COUNT;
     stars.resize(m);
-    for(int i=0;i<m;i++){
-        float a=6.2831853f*U(rng);
-        float R=140.f*sqrtf(U(rng));
-        stars[i]={a,-4000.f*U(rng)-200.f,R*cosf(a),10.f+R*sinf(a),14.f+20.f*U(rng),0.f,0.f};
+    star_render_data.resize(m);
+    
+    #pragma omp parallel num_threads(num_threads)
+    {
+        thread_local std::mt19937 rng(2674 + omp_get_thread_num());
+        thread_local std::uniform_real_distribution<float> U(0.f,1.f);
         
-        
-        if(HEAVY_MATH_MODE) {
-            for(int iter = 0; iter < 5; iter++) {
-                float dummy = sinf(a * iter) + cosf(R * iter) + tanf(stars[i].spd * 0.01f);
-                stars[i].a += dummy * 0.0001f;
+        #pragma omp for schedule(static)
+        for(int i=0; i<m; i++){
+            float a=6.2831853f*U(rng);
+            float R=140.f*sqrtf(U(rng));
+            stars[i]={a,-4000.f*U(rng)-200.f,R*cosf(a),10.f+R*sinf(a),14.f+20.f*U(rng),0.f,0.f};
+            
+            
+            if(HEAVY_MATH_MODE) {
+                for(int iter = 0; iter < 5; iter++) {
+                    float dummy = sinf(a * iter) + cosf(R * iter) + tanf(stars[i].spd * 0.01f);
+                    stars[i].a += dummy * 0.0001f;
+                }
             }
         }
     }
@@ -160,7 +193,8 @@ void gen(int n = -1){
         total_gen_time += gen_time;
     }
     
-    cout << "Generación SECUENCIAL completada en " << gen_time << " segundos" << endl;
+    cout << "Generación PARALELA completada en " << gen_time << " segundos" << endl;
+    cout << "   • Hilos utilizados: " << num_threads << endl;
     cout << "   • Partículas: " << n << " con " << MATH_ITERATIONS << " iteraciones cada una" << endl;
     cout << "   • Estrellas: " << m << endl;
     cout << "   • Operaciones matemáticas: ~" << (n * MATH_ITERATIONS * 10) << " por frame" << endl;
@@ -188,26 +222,11 @@ void camera_control(){
     }
 }
 
-void drawStars(){
-    glDisable(GL_DEPTH_TEST);
-    glBlendFunc(GL_ONE,GL_ONE);
-    glPointSize(1.8f);
-    glBegin(GL_POINTS);
-    
-    
-    for(auto &s:stars){
-        float tw=0.65f+0.35f*sinf(0.6f*T+s.a*3.f);
-        glColor4f(0.45f*tw,0.55f*tw,1.0f*tw,1.0f);
-        glVertex3f(s.r,s.spd,s.z);
-    }
-    glEnd();
-    glEnable(GL_DEPTH_TEST);
-}
 
-void colorBH(float u,float v,float &r,float &g,float &b){
-    float c1=0.5f+0.5f*sinf(6.2831853f*(u+0.05f*T));
-    float c2=0.5f+0.5f*sinf(6.2831853f*(u*0.5f+0.3f*v)+2.1f+0.1f*T);
-    float c3=0.5f+0.5f*sinf(6.2831853f*(u*0.9f-0.2f*v)+3.6f-0.07f*T);
+void colorBH(float u, float v, float &r, float &g, float &b, float time_T){
+    float c1=0.5f+0.5f*sinf(6.2831853f*(u+0.05f*time_T));
+    float c2=0.5f+0.5f*sinf(6.2831853f*(u*0.5f+0.3f*v)+2.1f+0.1f*time_T);
+    float c3=0.5f+0.5f*sinf(6.2831853f*(u*0.9f-0.2f*v)+3.6f-0.07f*time_T);
     float blue = 0.55f+0.45f*c1;
     float purple = 0.45f+0.55f*c2;
     float pink = 0.55f+0.45f*c3;
@@ -216,15 +235,66 @@ void colorBH(float u,float v,float &r,float &g,float &b){
     b = 1.00f*blue + 0.60f*purple + 0.20f*pink;
 }
 
-void pass(float ps,float alphaMul,float znear,float zfar,float swirl,float kdepth){
-    const float INNER_R = 10.0f;
-    glPointSize(ps);
+
+void preCalculateStars(){
+    auto calc_start = chrono::high_resolution_clock::now();
+    
+    #pragma omp parallel for num_threads(num_threads) schedule(static)
+    for(int i = 0; i < (int)stars.size(); i++){
+        auto &s = stars[i];
+        float tw=0.65f+0.35f*sinf(0.6f*T+s.a*3.f);
+        
+        star_render_data[i].x = s.r;
+        star_render_data[i].y = s.spd;
+        star_render_data[i].z = s.z;
+        star_render_data[i].r = 0.45f*tw;
+        star_render_data[i].g = 0.55f*tw;
+        star_render_data[i].b = 1.0f*tw;
+        star_render_data[i].a = 1.0f;
+        star_render_data[i].visible = true;
+    }
+    
+    auto calc_end = chrono::high_resolution_clock::now();
+    if (timing_enabled) {
+        total_parallel_time += chrono::duration<double>(calc_end - calc_start).count();
+    }
+}
+
+void drawStars(){
+    glDisable(GL_DEPTH_TEST);
+    glBlendFunc(GL_ONE,GL_ONE);
+    glPointSize(1.8f);
     glBegin(GL_POINTS);
     
     
-    for(auto &p:pts){
+    for(const auto &data : star_render_data){
+        if(data.visible){
+            glColor4f(data.r, data.g, data.b, data.a);
+            glVertex3f(data.x, data.y, data.z);
+        }
+    }
+    
+    glEnd();
+    glEnable(GL_DEPTH_TEST);
+}
+
+
+void preCalculateParticles(float znear, float zfar, float swirl, int pass_index){
+    const float INNER_R = 10.0f;
+    int base_index = pass_index * pts.size();
+    
+    #pragma omp parallel for num_threads(num_threads) schedule(dynamic, 50)
+    for(int i = 0; i < (int)pts.size(); i++){
+        auto &p = pts[i];
+        int data_index = base_index + i;
+        
         float z=p.z+fmodf(T*p.spd,1400.f);
-        if(z>znear||z<zfar) continue;
+        
+        if(z>znear || z<zfar) {
+            particle_render_data[data_index].visible = false;
+            continue;
+        }
+        
         float a=p.a + swirl*T + 0.0019f*z + p.band*(6.2831853f/7.f);
         float r=p.r*(1.f+0.0011f*z);
         if(r<INNER_R) r=INNER_R;
@@ -233,13 +303,49 @@ void pass(float ps,float alphaMul,float znear,float zfar,float swirl,float kdept
         float y=(r-wob)*sinf(a)+p.jy*cosf(0.8f*T+0.013f*z);
         float u=fmodf(0.0025f*z + 0.12f*p.band,1.f);
         float v=fabsf(z)/1400.f;
-        float cr,cg,cb; colorBH(u,v,cr,cg,cb);
+        
+        float cr,cg,cb; 
+        colorBH(u,v,cr,cg,cb,T);
+        
         float glow=0.6f+0.4f*sinf(2.4f*T+0.3f*p.band+0.003f*z);
         float centerFade = 0.6f + 0.4f*(r/INNER_R);
-        float fade=(1.f - fminf(1.f,v))*alphaMul*glow*centerFade;
-        glColor4f(cr,cg,cb,fade);
-        glVertex3f(x,y,z);
+        float fade=(1.f - fminf(1.f,v))*glow*centerFade;
+        
+        particle_render_data[data_index].x = x;
+        particle_render_data[data_index].y = y;
+        particle_render_data[data_index].z = z;
+        particle_render_data[data_index].r = cr;
+        particle_render_data[data_index].g = cg;
+        particle_render_data[data_index].b = cb;
+        particle_render_data[data_index].a = fade;
+        particle_render_data[data_index].visible = true;
     }
+}
+
+void pass(float ps, float alphaMul, float znear, float zfar, float swirl, float kdepth, int pass_index){
+    auto calc_start = chrono::high_resolution_clock::now();
+    
+    
+    preCalculateParticles(znear, zfar, swirl, pass_index);
+    
+    auto calc_end = chrono::high_resolution_clock::now();
+    if (timing_enabled) {
+        total_parallel_time += chrono::duration<double>(calc_end - calc_start).count();
+    }
+    
+    
+    glPointSize(ps);
+    glBegin(GL_POINTS);
+    
+    int base_index = pass_index * pts.size();
+    for(int i = 0; i < (int)pts.size(); i++){
+        const auto &data = particle_render_data[base_index + i];
+        if(data.visible){
+            glColor4f(data.r, data.g, data.b, data.a * alphaMul);
+            glVertex3f(data.x, data.y, data.z);
+        }
+    }
+    
     glEnd();
 }
 
@@ -265,24 +371,24 @@ void drawFPS() {
     glDisable(GL_DEPTH_TEST);
     glColor3f(0.0f, 1.0f, 0.0f);
     
-    char fpsStr[350];
-    sprintf(fpsStr, "FPS: %.1f | Partículas: %d | Matemática: %dx | Frames: %d | Tiempo: %.2fs | SECUENCIAL", 
-            currentFPS, PARTICLE_COUNT, MATH_ITERATIONS, frame_count_timing, total_computation_time);
+    char fpsStr[400];
+    sprintf(fpsStr, "FPS: %.1f | Hilos: %d | Partículas: %d | Matemática: %dx | Frames: %d | Tiempo: %.2fs | PARALELO", 
+            currentFPS, num_threads, PARTICLE_COUNT, MATH_ITERATIONS, frame_count_timing, total_computation_time);
     
     glRasterPos2f(10, H - 25);
     for (char* c = fpsStr; *c; c++) {
         glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
     }
     
-    char infoStr[200];
-    sprintf(infoStr, "Ops/frame: ~%d | Estrellas: %d | [ESC] Salir y guardar métricas", 
+    char infoStr[250];
+    sprintf(infoStr, "Ops/frame: ~%d | Estrellas: %d | [+/-] Cambiar hilos | [ESC] Salir", 
             PARTICLE_COUNT * MATH_ITERATIONS * 10, STAR_COUNT);
     glRasterPos2f(10, H - 45);
     for (char* c = infoStr; *c; c++) {
         glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
     }
     
-    char controlStr[] = "[C] Modo Camara | [F] Modo FPS";
+    char controlStr[] = "[C] Camara | [F] FPS";
     glRasterPos2f(10, H - 65);
     for (char* c = controlStr; *c; c++) {
         glutBitmapCharacter(GLUT_BITMAP_HELVETICA_12, *c);
@@ -311,15 +417,17 @@ void draw(){
     glDisable(GL_LIGHTING);
     camera_control();
     
+    
+    preCalculateStars();
     drawStars();
     
     
-    pass(1.5f,0.15f,1200.f,-3000.f,0.25f,0.0019f);
-    pass(1.8f,0.25f,900.f,-2600.f,0.35f,0.0019f);
-    pass(2.2f,0.40f,600.f,-2000.f,0.40f,0.0021f);
-    pass(2.6f,0.50f,280.f,-1200.f,0.45f,0.0021f);
-    pass(3.5f,0.75f,150.f,-800.f,0.50f,0.0023f);
-    pass(4.2f,0.95f,80.f,-520.f,0.55f,0.0023f);
+    pass(1.5f,0.15f,1200.f,-3000.f,0.25f,0.0019f,0);
+    pass(1.8f,0.25f,900.f,-2600.f,0.35f,0.0019f,1);
+    pass(2.2f,0.40f,600.f,-2000.f,0.40f,0.0021f,2);
+    pass(2.6f,0.50f,280.f,-1200.f,0.45f,0.0021f,3);
+    pass(3.5f,0.75f,150.f,-800.f,0.50f,0.0023f,4);
+    pass(4.2f,0.95f,80.f,-520.f,0.55f,0.0023f,5);
     
     glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
     drawFPS();
@@ -352,7 +460,8 @@ void display(){
             cout << "Frames procesados: " << frame_count_timing << 
                     ", Tiempo promedio por frame: " << 
                     (total_computation_time / frame_count_timing) * 1000 << " ms" << 
-                    ", FPS actual: " << currentFPS << endl;
+                    ", FPS actual: " << currentFPS << 
+                    ", Hilos: " << num_threads << endl;
         }
     }
 }
@@ -373,6 +482,18 @@ void key(unsigned char k, int x, int y) {
             if (!camera.freeMode) {
                 camera.x = 30.0f; camera.y = 5.0f; camera.z = 0.0f;
                 camera.pitch = 0.0f; camera.yaw = 0.0f;
+            }
+            break;
+        case '+': case '=':
+            if(num_threads < omp_get_max_threads()) {
+                num_threads++;
+                cout << "Número de hilos aumentado a: " << num_threads << endl;
+            }
+            break;
+        case '-': case '_':
+            if(num_threads > 1) {
+                num_threads--;
+                cout << "Número de hilos reducido a: " << num_threads << endl;
             }
             break;
         case 'w': case 'W':
@@ -436,8 +557,11 @@ void motion(int x, int y) {
 }
 
 int main(int argc,char**argv){
-    cout << "SCREENSAVER SECUENCIAL" << endl;
-    cout << "====================================================" << endl;
+    
+    num_threads = omp_get_max_threads();
+    
+    cout << "SCREENSAVER PARALELO" << endl;
+    cout << "============================================================" << endl;
     
     
     if(argc > 1) {
@@ -454,15 +578,24 @@ int main(int argc,char**argv){
         cout << "• Iteraciones matemáticas configuradas: " << MATH_ITERATIONS << endl;
     }
     
+    if(argc > 3) {
+        num_threads = atoi(argv[3]);
+        if(num_threads < 1) num_threads = 1;
+        if(num_threads > omp_get_max_threads()) num_threads = omp_get_max_threads();
+        cout << "• Hilos configurados por argumento: " << num_threads << endl;
+    }
+    
     cout << endl;
+    cout << "CONFIGURACIÓN:" << endl;
     cout << "   • Partículas: " << PARTICLE_COUNT << endl;
     cout << "   • Iteraciones matemáticas por partícula: " << MATH_ITERATIONS << endl;
     cout << "   • Estrellas: " << STAR_COUNT << endl;
     cout << "   • Carga computacional estimada: " << (PARTICLE_COUNT * MATH_ITERATIONS * 10) << " ops/frame" << endl;
-    cout << "   • Versión: SECUENCIAL" << endl;
+    cout << "   • Hilos OpenMP: " << num_threads << " de " << omp_get_max_threads() << " disponibles" << endl;
+    cout << "   • Versión: PARALELA" << endl;
     cout << "   • Passes de renderizado: 6" << endl;
     cout << endl;
-    cout << "Iniciando medición de tiempo..." << endl;
+    cout << "Iniciando medición de tiempo" << endl;
     
     start_time = chrono::high_resolution_clock::now();
     
