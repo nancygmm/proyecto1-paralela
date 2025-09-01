@@ -1,3 +1,4 @@
+// Silencia advertencias deprecadas de OpenGL
 #define GL_SILENCE_DEPRECATION
 #include <OpenGL/gl.h>
 #include <OpenGL/glu.h>
@@ -12,34 +13,36 @@
 
 using namespace std;
 
+// Tamaño de ventana y tiempo global para animaciones
 int W=1280,H=800;
 float T=0.f;
 
+// Parámetros de simulación/render
+int PARTICLE_COUNT = 200000;   // Cantidad de partículas   
+int STAR_COUNT = 15000;        // Cantidad de estrellas
+int MATH_ITERATIONS = 15;      // Carga matemática por partícula (simula cómputo pesado)
+bool HEAVY_MATH_MODE = true;   // Activa/desactiva la carga pesada  
+int num_threads = 4;           // Cantidad de hilos OpenMP a usar (se puede ajustar en runtime con +/-)   
 
-int PARTICLE_COUNT = 200000;      
-int STAR_COUNT = 15000;           
-int MATH_ITERATIONS = 15;         
-bool HEAVY_MATH_MODE = true;      
-int num_threads = 4;              
-
-
+// Medición de tiempos
 chrono::high_resolution_clock::time_point start_time;
 chrono::high_resolution_clock::time_point frame_start;
 chrono::high_resolution_clock::time_point frame_end;
-double total_gen_time = 0.0;
-double total_draw_time = 0.0;
-double total_computation_time = 0.0;
-double total_parallel_time = 0.0;
-int frame_count_timing = 0;
-bool timing_enabled = true;
+double total_gen_time = 0.0;    // tiempo total de generación por sesión
+double total_draw_time = 0.0;   // tiempo total de dibujo por sesión
+double total_computation_time = 0.0;    // tiempo acumulado por frame (display)
+double total_parallel_time = 0.0;       // tiempo dedicado a secciones paralelas
+int frame_count_timing = 0;     // #frames medidos
+bool timing_enabled = true;     // habilita/inhabilita medición
 
-
+// Estructura con datos ya listos para pintar (posición, color, visibilidad)
 struct RenderData {
     float x, y, z;
     float r, g, b, a;
     bool visible;
 };
 
+// Cámara en modo “orbital” o “libre” (freeMode)
 struct Camera {
     float x, y, z;          
     float pitch, yaw;       
@@ -50,25 +53,28 @@ struct Camera {
 int lastMouseX = W/2, lastMouseY = H/2;
 bool mousePressed = false;
 
+// HUD: FPS y contadores
 bool showFPS = true;
 int frameCount = 0;
 float lastTime = 0.0f;
 float currentFPS = 0.0f;
 
+// Partícula básica y contenedores
 struct Particle{float a,z,r,spd,band,jx,jy;};
 vector<Particle> pts,stars;
 
-
+// Buffers de render precomputados (partículas/estrellas)
 vector<RenderData> particle_render_data;
 vector<RenderData> star_render_data;
 
+// Tiempo relativo desde que inició el programa
 float now(){ 
     static auto t0=chrono::high_resolution_clock::now(); 
     auto t=chrono::high_resolution_clock::now(); 
     return chrono::duration<float>(t-t0).count(); 
 }
 
-
+// Escritura de métricas a archivo
 void saveTimingMetrics() {
     if (frame_count_timing > 0) {
         ofstream file("parallel_timing_results.txt", ios::app);
@@ -88,6 +94,7 @@ void saveTimingMetrics() {
         file << "=====================================" << endl << endl;
         file.close();
         
+        // Resumen en consola
         cout << "\n=== MÉTRICAS PARALELAS FINALES ===" << endl;
         cout << "Número de hilos: " << num_threads << endl;
         cout << "Partículas: " << PARTICLE_COUNT << " | Iteraciones: " << MATH_ITERATIONS << endl;
@@ -99,6 +106,7 @@ void saveTimingMetrics() {
     }
 }
 
+// Generación paralela de datos
 void gen(int n = -1){
     if(n == -1) n = PARTICLE_COUNT;
     
@@ -106,21 +114,22 @@ void gen(int n = -1){
     
     cout << "Generando " << n << " partículas PARALELO" << endl;
     
+    // Reserva de espacio: partículas y buffers de render (6 pases)
     pts.resize(n);
     particle_render_data.resize(n * 6); 
     
-    
+    // Región paralela: inicialización de partículas
     #pragma omp parallel num_threads(num_threads)
     {
-        
+        // RNG por hilo para evitar contención y mantener independencia
         thread_local std::mt19937 rng(1337 + omp_get_thread_num());
         thread_local std::uniform_real_distribution<float> U(0.f,1.f);
         thread_local std::uniform_real_distribution<float> S(-1.f,1.f);
         
-        
+        // Distribución del trabajo por bloques dinámicos
         #pragma omp for schedule(dynamic, 100)
         for(int i = 0; i < n; i++){
-            
+            // Parámetros iniciales de cada partícula
             pts[i].a=6.2831853f*U(rng);
             pts[i].z=-1200.f*U(rng)-40.f;
             pts[i].r=4.f+26.f*powf(U(rng),0.7f);
@@ -129,12 +138,11 @@ void gen(int n = -1){
             pts[i].jx=0.6f*S(rng);
             pts[i].jy=0.6f*S(rng);
             
-            
+            // Carga matemática para simular cómputo intensivo
             if(HEAVY_MATH_MODE) {
                 for(int iter = 0; iter < MATH_ITERATIONS; iter++) {
                     float complexity_factor = 1.0f + iter * 0.1f;
                     float dummy = 0;
-                    
                     
                     dummy += sinf(pts[i].a * complexity_factor) * cosf(pts[i].z * complexity_factor);
                     dummy += tanf(pts[i].r * 0.01f + iter) * sinf(pts[i].spd * 0.001f);
@@ -143,24 +151,26 @@ void gen(int n = -1){
                     dummy += expf(-fabsf(pts[i].jx) * 0.1f) * logf(fabsf(pts[i].jy) + 1.0f);
                     dummy += atanf(pts[i].band + iter) * sinhf(pts[i].a * 0.1f);
                     
+                    // Pequeño bucle extra para variar la carga
                     for(int j = 0; j < 3; j++) {
                         dummy += cosf(pts[i].a + j) * sinf(pts[i].z + j);
                     }
                     
+                    // Perturbación leve de parámetros (no afecta estética)
                     pts[i].a += dummy * 0.0001f;
                     pts[i].jx += dummy * 0.00005f;
                 }
             }
         }
         
-        
+        // Mensaje una vez por región paralela
         #pragma omp single
         {
             cout << "  Progreso: Generación paralela con " << num_threads << " hilos..." << endl;
         }
     }
     
-    
+    // Generación de estrellas (paralela también)
     int m = STAR_COUNT;
     stars.resize(m);
     star_render_data.resize(m);
@@ -186,6 +196,7 @@ void gen(int n = -1){
         }
     }
     
+    // Fin y acumulación del tiempo de generación
     auto gen_end = chrono::high_resolution_clock::now();
     double gen_time = chrono::duration<double>(gen_end - gen_start).count();
     
@@ -201,6 +212,7 @@ void gen(int n = -1){
     cout << endl;
 }
 
+// Proyección y cámara
 void proj(){
     glViewport(0,0,W,H);
     glMatrixMode(GL_PROJECTION); glLoadIdentity();
@@ -208,6 +220,7 @@ void proj(){
     glMatrixMode(GL_MODELVIEW);
 }
 
+// Cámara orbital por defecto o cámara libre (WASD/QE + mouse)
 void camera_control(){
     if (!camera.freeMode) {
         float r=28.f+7.f*sinf(0.32f*T);
@@ -222,7 +235,7 @@ void camera_control(){
     }
 }
 
-
+// Colores de partículas (paleta animada)
 void colorBH(float u, float v, float &r, float &g, float &b, float time_T){
     float c1=0.5f+0.5f*sinf(6.2831853f*(u+0.05f*time_T));
     float c2=0.5f+0.5f*sinf(6.2831853f*(u*0.5f+0.3f*v)+2.1f+0.1f*time_T);
@@ -235,7 +248,7 @@ void colorBH(float u, float v, float &r, float &g, float &b, float time_T){
     b = 1.00f*blue + 0.60f*purple + 0.20f*pink;
 }
 
-
+// Pre-cálculos paralelos de estrellas
 void preCalculateStars(){
     auto calc_start = chrono::high_resolution_clock::now();
     
@@ -260,6 +273,7 @@ void preCalculateStars(){
     }
 }
 
+// Dibuja estrellas usando el buffer precomputado
 void drawStars(){
     glDisable(GL_DEPTH_TEST);
     glBlendFunc(GL_ONE,GL_ONE);
@@ -278,7 +292,7 @@ void drawStars(){
     glEnable(GL_DEPTH_TEST);
 }
 
-
+// Pre-cálculo paralelo por “pass” de partículas
 void preCalculateParticles(float znear, float zfar, float swirl, int pass_index){
     const float INNER_R = 10.0f;
     int base_index = pass_index * pts.size();
@@ -295,22 +309,29 @@ void preCalculateParticles(float znear, float zfar, float swirl, int pass_index)
             continue;
         }
         
+        // Trayectoria y tamaño
         float a=p.a + swirl*T + 0.0019f*z + p.band*(6.2831853f/7.f);
         float r=p.r*(1.f+0.0011f*z);
         if(r<INNER_R) r=INNER_R;
+
+        // Pequeñas oscilaciones y jitter
         float wob=0.8f*sinf(0.7f*T+p.band*0.8f+0.02f*z);
         float x=(r+wob)*cosf(a)+p.jx*sinf(0.9f*T+0.01f*z);
         float y=(r-wob)*sinf(a)+p.jy*cosf(0.8f*T+0.013f*z);
+
+        // Coordenadas para color
         float u=fmodf(0.0025f*z + 0.12f*p.band,1.f);
         float v=fabsf(z)/1400.f;
         
         float cr,cg,cb; 
         colorBH(u,v,cr,cg,cb,T);
         
+        // Transparencia con brillo y desvanecimiento hacia el centro
         float glow=0.6f+0.4f*sinf(2.4f*T+0.3f*p.band+0.003f*z);
         float centerFade = 0.6f + 0.4f*(r/INNER_R);
         float fade=(1.f - fminf(1.f,v))*glow*centerFade;
         
+        // Se llena el buffer de render
         particle_render_data[data_index].x = x;
         particle_render_data[data_index].y = y;
         particle_render_data[data_index].z = z;
@@ -322,6 +343,7 @@ void preCalculateParticles(float znear, float zfar, float swirl, int pass_index)
     }
 }
 
+// Un “pass” de dibujo: pre-calcula en paralelo y dibuja los puntos visibles
 void pass(float ps, float alphaMul, float znear, float zfar, float swirl, float kdepth, int pass_index){
     auto calc_start = chrono::high_resolution_clock::now();
     
@@ -349,6 +371,7 @@ void pass(float ps, float alphaMul, float znear, float zfar, float swirl, float 
     glEnd();
 }
 
+// HUD de FPS e información de control
 void drawFPS() {
     if (!showFPS) return;
     
@@ -409,6 +432,7 @@ void drawFPS() {
     glMatrixMode(GL_MODELVIEW);
 }
 
+// Dibujo de un frame: cámara, estrellas y 6 pases de partículas
 void draw(){
     auto draw_start = chrono::high_resolution_clock::now();
     
@@ -417,11 +441,11 @@ void draw(){
     glDisable(GL_LIGHTING);
     camera_control();
     
-    
+    // Estrellas (pre-cálculo paralelo + dibujo)
     preCalculateStars();
     drawStars();
     
-    
+    // Seis pasadas con distintos parámetros (profundidad, tamaño, swirl)
     pass(1.5f,0.15f,1200.f,-3000.f,0.25f,0.0019f,0);
     pass(1.8f,0.25f,900.f,-2600.f,0.35f,0.0019f,1);
     pass(2.2f,0.40f,600.f,-2000.f,0.40f,0.0021f,2);
@@ -438,6 +462,7 @@ void draw(){
     }
 }
 
+// Callback principal de dibujo de GLUT: mide el tiempo de cada frame
 void display(){
     if (timing_enabled) {
         frame_start = chrono::high_resolution_clock::now();
@@ -455,7 +480,7 @@ void display(){
         total_computation_time += chrono::duration<double>(frame_end - frame_start).count();
         frame_count_timing++;
         
-        
+        // Mensaje periódico para seguimiento en consola
         if (frame_count_timing % 1000 == 0) {
             cout << "Frames procesados: " << frame_count_timing << 
                     ", Tiempo promedio por frame: " << 
@@ -466,14 +491,16 @@ void display(){
     }
 }
 
+// Callbacks auxiliares
 void reshape(int w,int h){ W=w; H=h; proj(); }
 void idle(){ glutPostRedisplay(); }
 
+// Teclado: ESC guarda métricas; C cambia cámara; F oculta/mostrar FPS; +/- cambia hilos
 void key(unsigned char k, int x, int y) {
     float moveSpeed = camera.speed;
     
     switch(k) {
-        case 27: 
+        case 27: // ESC
             saveTimingMetrics();
             exit(0); 
             break; 
@@ -532,6 +559,7 @@ void key(unsigned char k, int x, int y) {
     }
 }
 
+// Mouse y movimiento para mirar en modo cámara libre
 void mouse(int button, int state, int x, int y) {
     if (button == GLUT_LEFT_BUTTON) {
         mousePressed = (state == GLUT_DOWN);
@@ -556,6 +584,7 @@ void motion(int x, int y) {
     }
 }
 
+// Punto de entrada 
 int main(int argc,char**argv){
     
     num_threads = omp_get_max_threads();
@@ -563,7 +592,7 @@ int main(int argc,char**argv){
     cout << "SCREENSAVER PARALELO" << endl;
     cout << "============================================================" << endl;
     
-    
+    // Lectura de argumentos: partículas, iteraciones y número de hilos
     if(argc > 1) {
         PARTICLE_COUNT = atoi(argv[1]);
         if(PARTICLE_COUNT < 10000) PARTICLE_COUNT = 10000;
@@ -599,12 +628,13 @@ int main(int argc,char**argv){
     
     start_time = chrono::high_resolution_clock::now();
     
+    // Inicialización de GLUT y registro de callbacks
     glutInit(&argc,argv);
     glutInitDisplayMode(GLUT_DOUBLE|GLUT_RGB|GLUT_DEPTH);
     glutInitWindowSize(W,H);
     glutCreateWindow("Agujero de gusano");
     proj(); 
-    gen();
+    gen();  // generación paralela de datos
     glEnable(GL_POINT_SMOOTH);
     glutDisplayFunc(display);
     glutReshapeFunc(reshape);

@@ -11,16 +11,18 @@
 
 using namespace std;
 
+// Dimensiones de la ventana
 int W=1280,H=800;
+// Tiempo global utilizado para animaciones
 float T=0.f;
 
+// Parámetros de configuración
+int PARTICLE_COUNT = 200000;    // Cantidad de partículas  
+int STAR_COUNT = 15000;         // Cantidad de estrellas
+int MATH_ITERATIONS = 15;       // Número de iteraciones matemáticas por partícula  
+bool HEAVY_MATH_MODE = true;    // Activa cálculos adicionales para simular carga 
 
-int PARTICLE_COUNT = 200000;      
-int STAR_COUNT = 15000;           
-int MATH_ITERATIONS = 15;         
-bool HEAVY_MATH_MODE = true;      
-
-
+// Variables para medir tiempos
 chrono::high_resolution_clock::time_point start_time;
 chrono::high_resolution_clock::time_point frame_start;
 chrono::high_resolution_clock::time_point frame_end;
@@ -30,6 +32,7 @@ double total_computation_time = 0.0;
 int frame_count_timing = 0;
 bool timing_enabled = true;
 
+// Estructura para la cámara
 struct Camera {
     float x, y, z;          
     float pitch, yaw;       
@@ -37,24 +40,28 @@ struct Camera {
     bool freeMode;          
 } camera = {30.0f, 5.0f, 0.0f, 0.0f, 0.0f, 2.0f, false};
 
+// Variables para controlar el mouse y el modo de cámara
 int lastMouseX = W/2, lastMouseY = H/2;
 bool mousePressed = false;
 
+// Variables para mostrar FPS en pantalla
 bool showFPS = true;
 int frameCount = 0;
 float lastTime = 0.0f;
 float currentFPS = 0.0f;
 
+// Definición de partícula y contenedores
 struct Particle{float a,z,r,spd,band,jx,jy;};
 vector<Particle> pts,stars;
 
+// Función de tiempo relativo
 float now(){ 
     static auto t0=chrono::high_resolution_clock::now(); 
     auto t=chrono::high_resolution_clock::now(); 
     return chrono::duration<float>(t-t0).count(); 
 }
 
-
+// Guarda métricas de ejecución en un archivo
 void saveTimingMetrics() {
     if (frame_count_timing > 0) {
         ofstream file("sequential_timing_results.txt", ios::app);
@@ -82,6 +89,7 @@ void saveTimingMetrics() {
     }
 }
 
+// Genera partículas y estrellas (cálculo secuencial)
 void gen(int n = -1){
     if(n == -1) n = PARTICLE_COUNT;
     
@@ -95,7 +103,7 @@ void gen(int n = -1){
     
     
     for(int i = 0; i < n; i++){
-        
+        // Se inicializan atributos de cada partícula
         pts[i].a=6.2831853f*U(rng);
         pts[i].z=-1200.f*U(rng)-40.f;
         pts[i].r=4.f+26.f*powf(U(rng),0.7f);
@@ -104,14 +112,13 @@ void gen(int n = -1){
         pts[i].jx=0.6f*S(rng);
         pts[i].jy=0.6f*S(rng);
         
-        
+        // Cálculo extra para simular carga
         if(HEAVY_MATH_MODE) {
             for(int iter = 0; iter < MATH_ITERATIONS; iter++) {
                 
                 float complexity_factor = 1.0f + iter * 0.1f;
                 float dummy = 0;
-                
-                
+                 
                 dummy += sinf(pts[i].a * complexity_factor) * cosf(pts[i].z * complexity_factor);
                 dummy += tanf(pts[i].r * 0.01f + iter) * sinf(pts[i].spd * 0.001f);
                 dummy += sqrtf(fabsf(pts[i].r * complexity_factor + 1));
@@ -119,24 +126,21 @@ void gen(int n = -1){
                 dummy += expf(-fabsf(pts[i].jx) * 0.1f) * logf(fabsf(pts[i].jy) + 1.0f);
                 dummy += atanf(pts[i].band + iter) * sinhf(pts[i].a * 0.1f);
                 
-                
                 for(int j = 0; j < 3; j++) {
                     dummy += cosf(pts[i].a + j) * sinf(pts[i].z + j);
                 }
-                
                 
                 pts[i].a += dummy * 0.0001f;
                 pts[i].jx += dummy * 0.00005f;
             }
         }
-        
-        
+         
         if((i + 1) % 50000 == 0) {
             cout << "  Progreso: " << (i + 1) << "/" << n << " partículas..." << endl;
         }
     }
     
-    
+    // Generación de estrellas
     int m = STAR_COUNT;
     stars.resize(m);
     for(int i=0;i<m;i++){
@@ -167,6 +171,7 @@ void gen(int n = -1){
     cout << endl;
 }
 
+// Configuración de la proyección
 void proj(){
     glViewport(0,0,W,H);
     glMatrixMode(GL_PROJECTION); glLoadIdentity();
@@ -174,6 +179,7 @@ void proj(){
     glMatrixMode(GL_MODELVIEW);
 }
 
+// Control de la cámara (orbital o libre)
 void camera_control(){
     if (!camera.freeMode) {
         float r=28.f+7.f*sinf(0.32f*T);
@@ -188,6 +194,7 @@ void camera_control(){
     }
 }
 
+// Dibuja estrellas
 void drawStars(){
     glDisable(GL_DEPTH_TEST);
     glBlendFunc(GL_ONE,GL_ONE);
@@ -204,6 +211,7 @@ void drawStars(){
     glEnable(GL_DEPTH_TEST);
 }
 
+// Función de color para partículas
 void colorBH(float u,float v,float &r,float &g,float &b){
     float c1=0.5f+0.5f*sinf(6.2831853f*(u+0.05f*T));
     float c2=0.5f+0.5f*sinf(6.2831853f*(u*0.5f+0.3f*v)+2.1f+0.1f*T);
@@ -216,11 +224,11 @@ void colorBH(float u,float v,float &r,float &g,float &b){
     b = 1.00f*blue + 0.60f*purple + 0.20f*pink;
 }
 
+// Renderizado de partículas por pasadas
 void pass(float ps,float alphaMul,float znear,float zfar,float swirl,float kdepth){
     const float INNER_R = 10.0f;
     glPointSize(ps);
     glBegin(GL_POINTS);
-    
     
     for(auto &p:pts){
         float z=p.z+fmodf(T*p.spd,1400.f);
@@ -243,6 +251,7 @@ void pass(float ps,float alphaMul,float znear,float zfar,float swirl,float kdept
     glEnd();
 }
 
+// Dibuja FPS y texto de ayuda
 void drawFPS() {
     if (!showFPS) return;
     
@@ -303,6 +312,7 @@ void drawFPS() {
     glMatrixMode(GL_MODELVIEW);
 }
 
+// Función principal de dibujo por frame
 void draw(){
     auto draw_start = chrono::high_resolution_clock::now();
     
@@ -330,6 +340,7 @@ void draw(){
     }
 }
 
+// Callback de display
 void display(){
     if (timing_enabled) {
         frame_start = chrono::high_resolution_clock::now();
